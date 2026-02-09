@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import ReactFlow, { 
   addEdge, 
   Background, 
@@ -15,11 +15,11 @@ import ReactFlow, {
   ConnectionMode,
   MarkerType
 } from 'reactflow';
-import { Plus, Database, FileCode, Trash2, X, AlertCircle, Key, Link, Share2, ShieldCheck } from 'lucide-react';
+import { Plus, Database, FileCode, Trash2, X, AlertCircle, Key, Link, Share2, ShieldCheck, GripVertical, FileUp, Move } from 'lucide-react';
 
 import TableNode from './components/TableNode';
 import { TableData, Column, ColumnType, RelationType } from './types';
-import { generateSQL } from './services/geminiService';
+import { generateSQL, parseSQL } from './services/geminiService';
 
 const nodeTypes = {
   table: TableNode,
@@ -78,6 +78,47 @@ const App: React.FC = () => {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sqlOutput, setSqlOutput] = useState<string | null>(null);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importSqlInput, setImportSqlInput] = useState('');
+  
+  // Modal position state for dragging
+  const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 });
+  const isDraggingModal = useRef(false);
+  const dragStartPos = useRef({ x: 0, y: 0 });
+
+  // Reset modal offset when opened
+  useEffect(() => {
+    if (sqlOutput || isImportModalOpen) {
+      setModalOffset({ x: 0, y: 0 });
+    }
+  }, [sqlOutput, isImportModalOpen]);
+
+  const handleModalMouseDown = (e: React.MouseEvent) => {
+    isDraggingModal.current = true;
+    dragStartPos.current = { x: e.clientX - modalOffset.x, y: e.clientY - modalOffset.y };
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingModal.current) return;
+      setModalOffset({
+        x: e.clientX - dragStartPos.current.x,
+        y: e.clientY - dragStartPos.current.y
+      });
+    };
+    const handleMouseUp = () => {
+      isDraggingModal.current = false;
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [modalOffset]);
+  
+  // Drag and drop state for column reordering
+  const [draggedColIndex, setDraggedColIndex] = useState<number | null>(null);
 
   const selectedNode = useMemo(() => nodes.find(n => n.id === selectedNodeId) || null, [nodes, selectedNodeId]);
   const selectedEdge = useMemo(() => edges.find(e => e.id === selectedEdgeId) || null, [edges, selectedEdgeId]);
@@ -106,7 +147,6 @@ const App: React.FC = () => {
 
   const onConnect = useCallback(
     (params: Connection) => {
-      // 1. 연결선 추가
       setEdges((eds) => addEdge({
         ...params,
         label: '1:N',
@@ -114,7 +154,6 @@ const App: React.FC = () => {
         style: { stroke: '#3b82f6', strokeWidth: 2 }
       }, eds));
 
-      // 2. 타겟 컬럼에 FK 속성 자동 부여
       if (params.target && params.targetHandle) {
         updateColumnFKStatus(params.target, params.targetHandle, true);
       }
@@ -134,23 +173,19 @@ const App: React.FC = () => {
 
   const onEdgesDelete = useCallback(
     (edgesToDelete: Edge[]) => {
-      // 사이드바 닫기 로직
       if (edgesToDelete.some(e => e.id === selectedEdgeId)) {
         setSelectedEdgeId(null);
         setIsSidebarOpen(false);
       }
 
-      // 타겟 컬럼의 FK 속성 자동 해제 로직
       edgesToDelete.forEach(edge => {
         if (edge.target && edge.targetHandle) {
-          // 삭제될 선들을 제외한 나머지 선들 중 같은 타겟 컬럼을 가리키는 선이 있는지 확인
           const remainingEdges = edges.filter(e => 
             !edgesToDelete.some(ete => ete.id === e.id) && 
             e.target === edge.target && 
             e.targetHandle === edge.targetHandle
           );
 
-          // 더 이상 해당 컬럼을 가리키는 선이 없다면 FK 해제
           if (remainingEdges.length === 0) {
             updateColumnFKStatus(edge.target, edge.targetHandle, false);
           }
@@ -314,6 +349,77 @@ const App: React.FC = () => {
     }
   };
 
+  const handleImportSQL = () => {
+    if (!importSqlInput.trim()) return;
+    try {
+      const { tables, relations } = parseSQL(importSqlInput);
+      
+      if (tables.length === 0) {
+        alert("No valid CREATE TABLE statements found.");
+        return;
+      }
+
+      // Map to ReactFlow Nodes
+      const newNodes: Node<TableData>[] = tables.map((t, index) => ({
+        id: t.id,
+        type: 'table',
+        position: { x: 100 + (index % 3) * 300, y: 100 + Math.floor(index / 3) * 300 },
+        data: t,
+        style: { width: 200 }
+      }));
+
+      // Map to ReactFlow Edges
+      const newEdges: Edge[] = relations.map((r, index) => ({
+        id: `e-imported-${index}`,
+        source: r.source,
+        target: r.target,
+        sourceHandle: r.sourceHandle,
+        targetHandle: r.targetHandle,
+        label: r.label || '1:N',
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
+        style: { stroke: '#3b82f6', strokeWidth: 2 }
+      }));
+
+      setNodes(newNodes);
+      setEdges(newEdges);
+      setIsImportModalOpen(false);
+      setImportSqlInput('');
+      setSelectedNodeId(null);
+      setIsSidebarOpen(false);
+    } catch (e) {
+      console.error(e);
+      alert("Parsing failed. Please check the SQL format.");
+    }
+  };
+
+  // Drag and drop handlers
+  const onColDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedColIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const onColDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const onColDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    if (draggedColIndex === null || draggedColIndex === targetIndex || !selectedNodeId) return;
+
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id === selectedNodeId) {
+          const newCols = [...n.data.columns];
+          const [movedCol] = newCols.splice(draggedColIndex, 1);
+          newCols.splice(targetIndex, 0, movedCol);
+          return { ...n, data: { ...n.data, columns: newCols } };
+        }
+        return n;
+      })
+    );
+    setDraggedColIndex(null);
+  };
+
   const columnTypes: ColumnType[] = ['VARCHAR', 'INTEGER', 'BOOLEAN', 'DATE', 'TIMESTAMP', 'UUID', 'TEXT', 'JSON'];
 
   return (
@@ -321,11 +427,17 @@ const App: React.FC = () => {
       <header className="h-14 bg-slate-900 flex items-center justify-between px-6 shadow-md z-10">
         <div className="flex items-center gap-3">
           <Database className="text-blue-400 w-6 h-6" />
-          <h1 className="text-white font-bold text-lg tracking-tight">SchemaViz</h1>
+          <h1 className="text-white font-bold text-lg tracking-tight">TableMaker</h1>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={addTable} className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Add Table
+          </button>
+          <button 
+            onClick={() => setIsImportModalOpen(true)} 
+            className="flex items-center gap-2 px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-md text-sm font-medium transition-colors"
+          >
+            <FileUp className="w-4 h-4" /> Import SQL
           </button>
           <button 
             onClick={handleGenerateSQL} 
@@ -361,60 +473,112 @@ const App: React.FC = () => {
         </div>
 
         {isSidebarOpen && (
-          <div className="w-80 lg:w-96 bg-white border-l border-slate-200 shadow-2xl flex flex-col z-20 transition-all">
+          <div className="w-80 lg:w-96 bg-white border-l border-slate-200 shadow-2xl flex flex-col z-20 transition-all overflow-hidden">
             {selectedNode ? (
               <>
-                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                {/* Fixed Header */}
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
                   <h2 className="font-bold text-slate-800 flex items-center gap-2">
                     <Database className="w-4 h-4 text-blue-500" />
                     Table Properties
                   </h2>
                   <button onClick={() => setIsSidebarOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+                {/* Fixed Inputs Section */}
+                <div className="p-4 space-y-4 border-b border-slate-100 bg-white shadow-sm z-10 shrink-0">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Table Name</label>
-                    <input type="text" value={selectedNode.data.name} onChange={(e) => updateTableName(e.target.value)} className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                    <input 
+                      type="text" 
+                      value={selectedNode.data.name} 
+                      onChange={(e) => updateTableName(e.target.value)} 
+                      className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+                    />
                   </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Columns</label>
-                      <button onClick={addColumn} className="text-xs text-blue-600 hover:text-blue-500 font-semibold flex items-center gap-1"><Plus className="w-3 h-3" /> Add Column</button>
-                    </div>
-                    <div className="space-y-3">
-                      {selectedNode.data.columns.map((col) => (
-                        <div key={col.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200 relative group">
-                          <button onClick={() => removeColumn(col.id)} className="absolute -top-2 -right-2 w-5 h-5 bg-red-100 text-red-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3" /></button>
-                          <input type="text" value={col.name} onChange={(e) => updateColumn(col.id, { name: e.target.value })} className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs mb-2 outline-none focus:border-blue-500" />
-                          <div className="grid grid-cols-2 gap-2">
-                            <select value={col.type} onChange={(e) => updateColumn(col.id, { type: e.target.value as ColumnType })} className="text-[10px] border border-slate-300 rounded px-1 py-1 bg-white outline-none">
-                              {columnTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                            <div className="flex gap-1 items-center justify-end">
-                              <button onClick={() => updateColumn(col.id, { isPK: !col.isPK })} title="Primary Key" className={`p-1 rounded ${col.isPK ? 'bg-amber-100 text-amber-600' : 'bg-slate-200 text-slate-400'}`}><Key className="w-3 h-3" /></button>
-                              <button onClick={() => updateColumn(col.id, { isFK: !col.isFK })} title="Foreign Key" className={`p-1 rounded ${col.isFK ? 'bg-blue-100 text-blue-600' : 'bg-slate-200 text-slate-400'}`}><Link className="w-3 h-3" /></button>
-                              <button onClick={() => updateColumn(col.id, { isUnique: !col.isUnique })} title="Unique" className={`p-1 rounded ${col.isUnique ? 'bg-purple-100 text-purple-600' : 'bg-slate-200 text-slate-400'}`}><ShieldCheck className="w-3 h-3" /></button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Columns</label>
+                    <button 
+                      onClick={addColumn} 
+                      className="text-xs text-blue-600 hover:text-blue-500 font-semibold flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add Column
+                    </button>
                   </div>
                 </div>
-                <div className="p-4 border-t border-slate-100 bg-slate-50">
-                  <button onClick={deleteTable} className="w-full py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-md text-sm font-semibold flex items-center justify-center gap-2 border border-red-200"><Trash2 className="w-4 h-4" /> Delete Table</button>
+
+                {/* Scrollable Column List */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/30">
+                  {selectedNode.data.columns.map((col, index) => (
+                    <div 
+                      key={col.id} 
+                      draggable
+                      onDragStart={(e) => onColDragStart(e, index)}
+                      onDragOver={onColDragOver}
+                      onDrop={(e) => onColDrop(e, index)}
+                      className={`p-3 bg-white rounded-lg border border-slate-200 relative group shadow-sm hover:border-blue-300 transition-all flex flex-col cursor-default ${draggedColIndex === index ? 'opacity-50 border-dashed border-blue-400 scale-[0.98]' : ''}`}
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="cursor-grab active:cursor-grabbing text-slate-300 group-hover:text-slate-400 transition-colors">
+                          <GripVertical className="w-4 h-4" />
+                        </div>
+                        <input 
+                          type="text" 
+                          value={col.name} 
+                          onChange={(e) => updateColumn(col.id, { name: e.target.value })} 
+                          className="flex-1 bg-white border border-transparent border-b-slate-100 hover:border-b-blue-200 px-1 py-0.5 text-xs outline-none focus:border-b-blue-500 transition-colors" 
+                        />
+                        <button 
+                          onClick={() => removeColumn(col.id)} 
+                          className="w-5 h-5 bg-red-50 text-red-500 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500 hover:text-white transition-all z-10"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 pl-6">
+                        <select 
+                          value={col.type} 
+                          onChange={(e) => updateColumn(col.id, { type: e.target.value as ColumnType })} 
+                          className="text-[10px] border border-slate-100 rounded px-1 py-1 bg-slate-50 outline-none focus:border-blue-500 transition-colors"
+                        >
+                          {columnTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                        <div className="flex gap-1 items-center justify-end">
+                          <button onClick={() => updateColumn(col.id, { isPK: !col.isPK })} title="Primary Key" className={`p-1 rounded transition-colors ${col.isPK ? 'bg-amber-100 text-amber-600' : 'bg-slate-50 text-slate-300 hover:bg-slate-100 hover:text-slate-500'}`}><Key className="w-3 h-3" /></button>
+                          <button onClick={() => updateColumn(col.id, { isFK: !col.isFK })} title="Foreign Key" className={`p-1 rounded transition-colors ${col.isFK ? 'bg-blue-100 text-blue-600' : 'bg-slate-50 text-slate-300 hover:bg-slate-100 hover:text-slate-500'}`}><Link className="w-3 h-3" /></button>
+                          <button onClick={() => updateColumn(col.id, { isUnique: !col.isUnique })} title="Unique" className={`p-1 rounded transition-colors ${col.isUnique ? 'bg-purple-100 text-purple-600' : 'bg-slate-50 text-slate-300 hover:bg-slate-100 hover:text-slate-500'}`}><ShieldCheck className="w-3 h-3" /></button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {selectedNode.data.columns.length === 0 && (
+                    <div className="py-12 text-center text-slate-400 text-sm italic">
+                      No columns added yet.
+                    </div>
+                  )}
+                </div>
+
+                {/* Fixed Footer */}
+                <div className="p-4 border-t border-slate-100 bg-slate-50 shrink-0">
+                  <button 
+                    onClick={deleteTable} 
+                    className="w-full py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-md text-sm font-semibold flex items-center justify-center gap-2 border border-red-200 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" /> Delete Table
+                  </button>
                 </div>
               </>
             ) : selectedEdge ? (
               <>
-                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
                   <h2 className="font-bold text-slate-800 flex items-center gap-2">
                     <Share2 className="w-4 h-4 text-indigo-500" />
                     Relation Properties
                   </h2>
                   <button onClick={() => setIsSidebarOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
                 </div>
-                <div className="flex-1 p-4 space-y-6">
+                <div className="flex-1 p-4 space-y-6 overflow-y-auto">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Cardinality Type</label>
                     <div className="grid grid-cols-3 gap-2">
@@ -440,8 +604,8 @@ const App: React.FC = () => {
                     </p>
                   </div>
                 </div>
-                <div className="p-4 border-t border-slate-100 bg-slate-50">
-                  <button onClick={deleteEdge} className="w-full py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-md text-sm font-semibold flex items-center justify-center gap-2 border border-red-200"><Trash2 className="w-4 h-4" /> Delete Relation</button>
+                <div className="p-4 border-t border-slate-100 bg-slate-50 shrink-0">
+                  <button onClick={deleteEdge} className="w-full py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-md text-sm font-semibold flex items-center justify-center gap-2 border border-red-200 transition-colors"><Trash2 className="w-4 h-4" /> Delete Relation</button>
                 </div>
               </>
             ) : null}
@@ -449,19 +613,89 @@ const App: React.FC = () => {
         )}
       </div>
 
+      {/* Export SQL Modal */}
       {sqlOutput && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
-            <div className="p-4 border-b flex items-center justify-between bg-slate-900 text-white">
-              <h3 className="font-bold flex items-center gap-2"><FileCode className="w-5 h-5" /> Exported PostgreSQL SQL</h3>
-              <button onClick={() => setSqlOutput(null)} className="text-slate-400 hover:text-white"><X className="w-6 h-6" /></button>
+          <div 
+            style={{ transform: `translate(${modalOffset.x}px, ${modalOffset.y}px)` }}
+            className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden transition-shadow"
+          >
+            <div 
+              onMouseDown={handleModalMouseDown}
+              className="p-4 border-b flex items-center justify-between bg-slate-900 text-white cursor-move select-none"
+            >
+              <div className="flex items-center gap-2">
+                <FileCode className="w-5 h-5 text-blue-400" />
+                <h3 className="font-bold">Exported PostgreSQL SQL</h3>
+              </div>
+              <button 
+                onMouseDown={(e) => e.stopPropagation()} 
+                onClick={() => setSqlOutput(null)} 
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-6 h-6" />
+              </button>
             </div>
-            <div className="p-6 overflow-y-auto bg-slate-900">
+            <div className="flex-1 overflow-y-auto bg-slate-900 p-6">
               <pre className="text-emerald-400 font-mono text-sm whitespace-pre-wrap leading-relaxed">{sqlOutput}</pre>
             </div>
-            <div className="p-4 bg-slate-100 flex justify-end gap-3">
-              <button onClick={() => { navigator.clipboard.writeText(sqlOutput); alert("Copied!"); }} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold text-sm">Copy SQL</button>
-              <button onClick={() => setSqlOutput(null)} className="px-6 py-2 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-lg font-semibold text-sm">Close</button>
+            <div className="p-4 bg-slate-100 flex justify-end gap-3 shrink-0">
+              <button onClick={() => { navigator.clipboard.writeText(sqlOutput); alert("Copied!"); }} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-semibold text-sm transition-colors shadow-sm">Copy SQL</button>
+              <button onClick={() => setSqlOutput(null)} className="px-6 py-2 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-lg font-semibold text-sm transition-colors">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import SQL Modal */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div 
+            style={{ transform: `translate(${modalOffset.x}px, ${modalOffset.y}px)` }}
+            className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden transition-shadow"
+          >
+            <div 
+              onMouseDown={handleModalMouseDown}
+              className="p-4 border-b flex items-center justify-between bg-slate-800 text-white cursor-move select-none"
+            >
+              <div className="flex items-center gap-2">
+                <FileUp className="w-5 h-5 text-indigo-400" />
+                <h3 className="font-bold">Import PostgreSQL SQL</h3>
+              </div>
+              <button 
+                onMouseDown={(e) => e.stopPropagation()} 
+                onClick={() => setIsImportModalOpen(false)} 
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="p-4 bg-amber-50 border-b border-amber-100 shrink-0">
+              <p className="text-xs text-amber-700 leading-relaxed flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  <strong>PostgreSQL CREATE TABLE</strong> 및 <strong>ALTER TABLE</strong> 구문을 지원합니다. 
+                  기존의 모든 테이블과 관계가 초기화되고 입력된 SQL 기반으로 새로 구성됩니다.
+                </span>
+              </p>
+            </div>
+            <div className="flex-1 p-0 overflow-hidden relative">
+              <textarea 
+                value={importSqlInput}
+                onChange={(e) => setImportSqlInput(e.target.value)}
+                placeholder="-- Paste your SQL DDL here...&#10;CREATE TABLE users (...);&#10;ALTER TABLE posts ADD CONSTRAINT ...;"
+                className="w-full h-full bg-slate-900 text-emerald-400 font-mono text-sm p-6 outline-none resize-none placeholder:text-slate-600"
+              />
+            </div>
+            <div className="p-4 bg-slate-100 flex justify-end gap-3 shrink-0">
+              <button 
+                onClick={handleImportSQL} 
+                className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-sm transition-colors shadow-md disabled:opacity-50"
+                disabled={!importSqlInput.trim()}
+              >
+                Import Schema
+              </button>
+              <button onClick={() => setIsImportModalOpen(false)} className="px-6 py-2 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-lg font-semibold text-sm transition-colors">Cancel</button>
             </div>
           </div>
         </div>

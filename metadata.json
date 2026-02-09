@@ -1,6 +1,5 @@
-
 {
-  "name": "SchemaViz",
+  "name": "TableMaker",
   "description": "A professional-grade database relationship diagram (ERD) tool with GUI-based table manipulation and relationship management (1:1, 1:N, N:M).",
   "requestFramePermissions": []
 }
