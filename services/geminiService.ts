@@ -51,68 +51,122 @@ export const parseSQL = (sql: string): { tables: TableData[], relations: any[] }
   const tables: TableData[] = [];
   const relations: any[] = [];
   
-  // Normalize SQL
-  const cleanSql = sql.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  // 1. Pre-cleaning
+  let cleanSql = sql
+    .replace(/--.*$/gm, '') // Remove line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '') // Remove block comments
+    .replace(/DO\s*\$\$\s*[\s\S]*?\$\$\s*;/gi, '') // Remove DO $$ blocks
+    .replace(/CREATE\s+(?:UNIQUE\s+)?INDEX[\s\S]*?;/gi, '') // Remove INDEX creation
+    .trim();
   
-  // 1. Parse CREATE TABLE
+  // 2. Parse CREATE TABLE
   const createTableRegex = /CREATE\s+TABLE\s+(?:"?([^"\s\(\)]+)"?)\s*\(([\s\S]*?)\);/gi;
-  let match;
+  let tableMatch;
   
-  while ((match = createTableRegex.exec(cleanSql)) !== null) {
-    const tableName = match[1];
-    const columnsText = match[2];
+  while ((tableMatch = createTableRegex.exec(cleanSql)) !== null) {
+    const tableName = tableMatch[1];
+    const columnsText = tableMatch[2];
     const tableId = `t-${Math.random().toString(36).substr(2, 9)}`;
     
     const columns: Column[] = [];
-    const colLines = columnsText.split(/,(?![^(]*\))/); // Split by comma not inside brackets
+    const colLines = columnsText.split(/,(?![^(]*\))/);
     
     colLines.forEach(line => {
-      const colMatch = /"([^"]+)"\s+([A-Z]+(?:\(\d+\))?)(.*)/i.exec(line.trim());
+      const trimmedLine = line.trim();
+      if (!trimmedLine || 
+          /^(?:PRIMARY\s+KEY|UNIQUE|CONSTRAINT|CHECK|FOREIGN\s+KEY)/i.test(trimmedLine)) {
+        return;
+      }
+
+      // Match column name (quoted or not), type, and everything else
+      const colMatch = /(?:"?([^"\s]+)"?)\s+([A-Z0-9_]+(?:\s*\([^)]+\))?)([\s\S]*)/i.exec(trimmedLine);
+      
       if (colMatch) {
         const colName = colMatch[1];
         const rawType = colMatch[2].toUpperCase();
-        const constraints = colMatch[3].toUpperCase();
+        const rest = colMatch[3]; // Keep original for reference matching
         
-        columns.push({
-          id: `c-${Math.random().toString(36).substr(2, 9)}`,
+        const colId = `c-${Math.random().toString(36).substr(2, 9)}`;
+        const column: Column = {
+          id: colId,
           name: colName,
           type: reverseMapDataType(rawType),
-          isPK: constraints.includes('PRIMARY KEY'),
-          isFK: false, // Initially false, updated by relations later
-          isUnique: constraints.includes('UNIQUE'),
-          isNullable: !constraints.includes('NOT NULL')
-        });
+          isPK: /PRIMARY\s+KEY/i.test(rest),
+          isFK: /REFERENCES/i.test(rest),
+          isUnique: /UNIQUE/i.test(rest),
+          isNullable: !/NOT\s+NULL/i.test(rest)
+        };
+        
+        columns.push(column);
+
+        // Extract inline references: REFERENCES table(col)
+        const inlineFkMatch = /REFERENCES\s+(?:"?([^"\s\(\)]+)"?)\s*\(\s*(?:"?([^"\s\(\)]+)"?)\s*\)/i.exec(rest);
+        if (inlineFkMatch) {
+          (column as any)._rawRefTable = inlineFkMatch[1];
+          (column as any)._rawRefCol = inlineFkMatch[2];
+        }
       }
     });
     
     tables.push({ id: tableId, name: tableName, columns });
   }
   
-  // 2. Parse ALTER TABLE for Foreign Keys
-  const fkRegex = /ALTER\s+TABLE\s+(?:"?([^"\s]+)"?)\s+ADD\s+CONSTRAINT\s+(?:"?[^"\s]+"?)?\s*FOREIGN\s+KEY\s*\((?:"?([^"\s]+)"?)\)\s+REFERENCES\s+(?:"?([^"\s]+)"?)\s*\((?:"?([^"\s]+)"?)\)/gi;
+  // 3. Resolve Relationships
   
-  while ((match = fkRegex.exec(cleanSql)) !== null) {
-    const targetTableName = match[1];
-    const targetColName = match[2];
-    const sourceTableName = match[3];
-    const sourceColName = match[4];
+  // 3a. Inline References
+  tables.forEach(targetTable => {
+    targetTable.columns.forEach(targetCol => {
+      const rawRefTable = (targetCol as any)._rawRefTable;
+      const rawRefCol = (targetCol as any)._rawRefCol;
+      
+      if (rawRefTable) {
+        // Case-insensitive search
+        const sourceTable = tables.find(t => t.name.toLowerCase() === rawRefTable.toLowerCase());
+        if (sourceTable) {
+          const sourceCol = sourceTable.columns.find(c => c.name.toLowerCase() === rawRefCol.toLowerCase());
+          if (sourceCol) {
+            relations.push({
+              source: sourceTable.id,
+              target: targetTable.id,
+              sourceHandle: sourceCol.id,
+              targetHandle: targetCol.id,
+              label: '1:N'
+            });
+          }
+        }
+      }
+    });
+  });
+
+  // 3b. ALTER TABLE References
+  const alterFkRegex = /ALTER\s+TABLE\s+(?:"?([^"\s]+)"?)\s+ADD\s+CONSTRAINT\s+(?:"?[^"\s]+"?)?\s*FOREIGN\s+KEY\s*\((?:"?([^"\s]+)"?)\)\s+REFERENCES\s+(?:"?([^"\s]+)"?)\s*\((?:"?([^"\s]+)"?)\)/gi;
+  
+  let alterFkMatch;
+  while ((alterFkMatch = alterFkRegex.exec(cleanSql)) !== null) {
+    const targetTableName = alterFkMatch[1];
+    const targetColName = alterFkMatch[2];
+    const sourceTableName = alterFkMatch[3];
+    const sourceColName = alterFkMatch[4];
     
-    const sourceTable = tables.find(t => t.name === sourceTableName);
-    const targetTable = tables.find(t => t.name === targetTableName);
+    const sourceTable = tables.find(t => t.name.toLowerCase() === sourceTableName.toLowerCase());
+    const targetTable = tables.find(t => t.name.toLowerCase() === targetTableName.toLowerCase());
     
     if (sourceTable && targetTable) {
-      const sourceCol = sourceTable.columns.find(c => c.name === sourceColName);
-      const targetCol = targetTable.columns.find(c => c.name === targetColName);
+      const sourceCol = sourceTable.columns.find(c => c.name.toLowerCase() === sourceColName.toLowerCase());
+      const targetCol = targetTable.columns.find(c => c.name.toLowerCase() === targetColName.toLowerCase());
       
       if (sourceCol && targetCol) {
         targetCol.isFK = true;
-        relations.push({
-          source: sourceTable.id,
-          target: targetTable.id,
-          sourceHandle: sourceCol.id,
-          targetHandle: targetCol.id,
-          label: '1:N'
-        });
+        const exists = relations.some(r => r.source === sourceTable.id && r.target === targetTable.id && r.sourceHandle === sourceCol.id && r.targetHandle === targetCol.id);
+        if (!exists) {
+          relations.push({
+            source: sourceTable.id,
+            target: targetTable.id,
+            sourceHandle: sourceCol.id,
+            targetHandle: targetCol.id,
+            label: '1:N'
+          });
+        }
       }
     }
   }
@@ -127,7 +181,7 @@ const mapDataType = (type: ColumnType): string => {
     case 'INTEGER': return 'INTEGER';
     case 'BOOLEAN': return 'BOOLEAN';
     case 'DATE': return 'DATE';
-    case 'TIMESTAMP': return 'TIMESTAMP';
+    case 'TIMESTAMP': return 'TIMESTAMPTZ';
     case 'UUID': return 'UUID';
     case 'TEXT': return 'TEXT';
     case 'JSON': return 'JSONB';
@@ -136,13 +190,14 @@ const mapDataType = (type: ColumnType): string => {
 };
 
 const reverseMapDataType = (rawType: string): ColumnType => {
-  if (rawType.includes('VARCHAR')) return 'VARCHAR';
-  if (rawType.includes('INT')) return 'INTEGER';
-  if (rawType.includes('BOOL')) return 'BOOLEAN';
-  if (rawType.includes('DATE')) return 'DATE';
-  if (rawType.includes('TIMESTAMP')) return 'TIMESTAMP';
-  if (rawType.includes('UUID')) return 'UUID';
-  if (rawType.includes('TEXT')) return 'TEXT';
-  if (rawType.includes('JSON')) return 'JSON';
+  const t = rawType.toUpperCase();
+  if (t.includes('VARCHAR') || t.includes('CHAR')) return 'VARCHAR';
+  if (t.includes('INT') || t.includes('SERIAL') || t.includes('DOUBLE') || t.includes('NUMERIC') || t.includes('DECIMAL') || t.includes('FLOAT')) return 'INTEGER';
+  if (t.includes('BOOL')) return 'BOOLEAN';
+  if (t.includes('DATE')) return 'DATE';
+  if (t.includes('TIMESTAMP')) return 'TIMESTAMP';
+  if (t.includes('UUID')) return 'UUID';
+  if (t.includes('TEXT')) return 'TEXT';
+  if (t.includes('JSON')) return 'JSON';
   return 'VARCHAR';
 };

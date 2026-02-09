@@ -13,7 +13,9 @@ import ReactFlow, {
   NodeChange,
   EdgeChange,
   ConnectionMode,
-  MarkerType
+  MarkerType,
+  useReactFlow,
+  ReactFlowProvider
 } from 'reactflow';
 import { Plus, Database, FileCode, Trash2, X, AlertCircle, Key, Link, Share2, ShieldCheck, GripVertical, FileUp, Move } from 'lucide-react';
 
@@ -71,7 +73,8 @@ const initialEdges: Edge[] = [
   }
 ];
 
-const App: React.FC = () => {
+const TableMakerApp: React.FC = () => {
+  const { fitView } = useReactFlow();
   const [nodes, setNodes] = useState<Node<TableData>[]>(initialNodes);
   const [edges, setEdges] = useState<Edge[]>(initialEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -86,7 +89,6 @@ const App: React.FC = () => {
   const isDraggingModal = useRef(false);
   const dragStartPos = useRef({ x: 0, y: 0 });
 
-  // Reset modal offset when opened
   useEffect(() => {
     if (sqlOutput || isImportModalOpen) {
       setModalOffset({ x: 0, y: 0 });
@@ -115,9 +117,8 @@ const App: React.FC = () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [modalOffset]);
+  }, []);
   
-  // Drag and drop state for column reordering
   const [draggedColIndex, setDraggedColIndex] = useState<number | null>(null);
 
   const selectedNode = useMemo(() => nodes.find(n => n.id === selectedNodeId) || null, [nodes, selectedNodeId]);
@@ -355,17 +356,21 @@ const App: React.FC = () => {
       const { tables, relations } = parseSQL(importSqlInput);
       
       if (tables.length === 0) {
-        alert("No valid CREATE TABLE statements found.");
+        alert("No valid CREATE TABLE statements found. Please check your SQL.");
         return;
       }
 
-      // Map to ReactFlow Nodes
+      // Map to ReactFlow Nodes with grid positioning (Optimized for many tables)
+      const colCount = Math.ceil(Math.sqrt(tables.length));
       const newNodes: Node<TableData>[] = tables.map((t, index) => ({
         id: t.id,
         type: 'table',
-        position: { x: 100 + (index % 3) * 300, y: 100 + Math.floor(index / 3) * 300 },
+        position: { 
+          x: 100 + (index % colCount) * 350, 
+          y: 100 + Math.floor(index / colCount) * 450 
+        },
         data: t,
-        style: { width: 200 }
+        style: { width: 220 }
       }));
 
       // Map to ReactFlow Edges
@@ -385,14 +390,17 @@ const App: React.FC = () => {
       setIsImportModalOpen(false);
       setImportSqlInput('');
       setSelectedNodeId(null);
+      setSelectedEdgeId(null);
       setIsSidebarOpen(false);
+      
+      // Auto-fit after a tiny delay to allow ReactFlow to render the large set of nodes
+      setTimeout(() => fitView({ padding: 0.1 }), 100);
     } catch (e) {
       console.error(e);
-      alert("Parsing failed. Please check the SQL format.");
+      alert("Parsing failed. Ensure your SQL follows PostgreSQL CREATE TABLE / ALTER TABLE format.");
     }
   };
 
-  // Drag and drop handlers
   const onColDragStart = (e: React.DragEvent, index: number) => {
     setDraggedColIndex(index);
     e.dataTransfer.effectAllowed = 'move';
@@ -476,7 +484,6 @@ const App: React.FC = () => {
           <div className="w-80 lg:w-96 bg-white border-l border-slate-200 shadow-2xl flex flex-col z-20 transition-all overflow-hidden">
             {selectedNode ? (
               <>
-                {/* Fixed Header */}
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50 shrink-0">
                   <h2 className="font-bold text-slate-800 flex items-center gap-2">
                     <Database className="w-4 h-4 text-blue-500" />
@@ -485,7 +492,6 @@ const App: React.FC = () => {
                   <button onClick={() => setIsSidebarOpen(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
                 </div>
 
-                {/* Fixed Inputs Section */}
                 <div className="p-4 space-y-4 border-b border-slate-100 bg-white shadow-sm z-10 shrink-0">
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Table Name</label>
@@ -507,7 +513,6 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Scrollable Column List */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/30">
                   {selectedNode.data.columns.map((col, index) => (
                     <div 
@@ -559,7 +564,6 @@ const App: React.FC = () => {
                   )}
                 </div>
 
-                {/* Fixed Footer */}
                 <div className="p-4 border-t border-slate-100 bg-slate-50 shrink-0">
                   <button 
                     onClick={deleteTable} 
@@ -703,5 +707,11 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+const App: React.FC = () => (
+  <ReactFlowProvider>
+    <TableMakerApp />
+  </ReactFlowProvider>
+);
 
 export default App;
