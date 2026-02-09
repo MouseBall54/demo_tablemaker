@@ -78,7 +78,6 @@ const App: React.FC = () => {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sqlOutput, setSqlOutput] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
 
   const selectedNode = useMemo(() => nodes.find(n => n.id === selectedNodeId) || null, [nodes, selectedNodeId]);
   const selectedEdge = useMemo(() => edges.find(e => e.id === selectedEdgeId) || null, [edges, selectedEdgeId]);
@@ -93,14 +92,72 @@ const App: React.FC = () => {
     []
   );
 
+  const updateColumnFKStatus = useCallback((tableId: string, columnId: string, isFK: boolean) => {
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id === tableId) {
+          const updatedCols = n.data.columns.map(c => c.id === columnId ? { ...c, isFK } : c);
+          return { ...n, data: { ...n.data, columns: updatedCols } };
+        }
+        return n;
+      })
+    );
+  }, []);
+
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds) => addEdge({
-      ...params,
-      label: '1:N',
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
-      style: { stroke: '#3b82f6', strokeWidth: 2 }
-    }, eds)),
-    []
+    (params: Connection) => {
+      // 1. 연결선 추가
+      setEdges((eds) => addEdge({
+        ...params,
+        label: '1:N',
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
+        style: { stroke: '#3b82f6', strokeWidth: 2 }
+      }, eds));
+
+      // 2. 타겟 컬럼에 FK 속성 자동 부여
+      if (params.target && params.targetHandle) {
+        updateColumnFKStatus(params.target, params.targetHandle, true);
+      }
+    },
+    [updateColumnFKStatus]
+  );
+
+  const onNodesDelete = useCallback(
+    (nodesToDelete: Node[]) => {
+      if (nodesToDelete.some(n => n.id === selectedNodeId)) {
+        setSelectedNodeId(null);
+        setIsSidebarOpen(false);
+      }
+    },
+    [selectedNodeId]
+  );
+
+  const onEdgesDelete = useCallback(
+    (edgesToDelete: Edge[]) => {
+      // 사이드바 닫기 로직
+      if (edgesToDelete.some(e => e.id === selectedEdgeId)) {
+        setSelectedEdgeId(null);
+        setIsSidebarOpen(false);
+      }
+
+      // 타겟 컬럼의 FK 속성 자동 해제 로직
+      edgesToDelete.forEach(edge => {
+        if (edge.target && edge.targetHandle) {
+          // 삭제될 선들을 제외한 나머지 선들 중 같은 타겟 컬럼을 가리키는 선이 있는지 확인
+          const remainingEdges = edges.filter(e => 
+            !edgesToDelete.some(ete => ete.id === e.id) && 
+            e.target === edge.target && 
+            e.targetHandle === edge.targetHandle
+          );
+
+          // 더 이상 해당 컬럼을 가리키는 선이 없다면 FK 해제
+          if (remainingEdges.length === 0) {
+            updateColumnFKStatus(edge.target, edge.targetHandle, false);
+          }
+        }
+      });
+    },
+    [selectedEdgeId, edges, updateColumnFKStatus]
   );
 
   const onNodeClick = (_: any, node: Node<TableData>) => {
@@ -168,9 +225,11 @@ const App: React.FC = () => {
 
   const deleteEdge = () => {
     if (!selectedEdgeId) return;
-    setEdges((eds) => eds.filter((e) => e.id !== selectedEdgeId));
-    setSelectedEdgeId(null);
-    setIsSidebarOpen(false);
+    const edgeToDelete = edges.find(e => e.id === selectedEdgeId);
+    if (edgeToDelete) {
+      onEdgesDelete([edgeToDelete]);
+      setEdges((eds) => eds.filter((e) => e.id !== selectedEdgeId));
+    }
   };
 
   const addColumn = () => {
@@ -206,6 +265,11 @@ const App: React.FC = () => {
 
   const removeColumn = (colId: string) => {
     if (!selectedNodeId) return;
+    const edgesWithThisColumn = edges.filter(e => e.sourceHandle === colId || e.targetHandle === colId);
+    if (edgesWithThisColumn.length > 0) {
+      onEdgesDelete(edgesWithThisColumn);
+    }
+    
     setNodes((nds) =>
       nds.map((n) => {
         if (n.id === selectedNodeId) {
@@ -220,17 +284,20 @@ const App: React.FC = () => {
 
   const deleteTable = () => {
     if (!selectedNodeId) return;
+    const edgesWithThisTable = edges.filter(e => e.source === selectedNodeId || e.target === selectedNodeId);
+    if (edgesWithThisTable.length > 0) {
+      onEdgesDelete(edgesWithThisTable);
+    }
+
     setNodes(nds => nds.filter(n => n.id !== selectedNodeId));
     setEdges(eds => eds.filter(e => e.source !== selectedNodeId && e.target !== selectedNodeId));
     setSelectedNodeId(null);
     setIsSidebarOpen(false);
   };
 
-  // Fix: handleGenerateSQL is now async to handle AI generation
-  const handleGenerateSQL = async () => {
+  const handleGenerateSQL = () => {
     try {
-      setIsGenerating(true);
-      const sql = await generateSQL(
+      const sql = generateSQL(
         nodes.map(n => n.data), 
         edges.map(e => ({
           source: e.source,
@@ -244,8 +311,6 @@ const App: React.FC = () => {
     } catch (e) {
       console.error(e);
       alert("SQL generation failed.");
-    } finally {
-      setIsGenerating(false);
     }
   };
 
@@ -264,10 +329,9 @@ const App: React.FC = () => {
           </button>
           <button 
             onClick={handleGenerateSQL} 
-            disabled={isGenerating}
-            className="flex items-center gap-2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-sm font-medium transition-colors"
           >
-            <FileCode className="w-4 h-4" /> {isGenerating ? 'Generating...' : 'Export SQL'}
+            <FileCode className="w-4 h-4" /> Export SQL
           </button>
         </div>
       </header>
@@ -280,11 +344,14 @@ const App: React.FC = () => {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onNodesDelete={onNodesDelete}
+            onEdgesDelete={onEdgesDelete}
             nodeTypes={nodeTypes}
             onNodeClick={onNodeClick}
             onEdgeClick={onEdgeClick}
             onPaneClick={onPaneClick}
             connectionMode={ConnectionMode.Loose}
+            deleteKeyCode={['Delete', 'Backspace']}
             fitView
           >
             <Background color="#cbd5e1" variant={'dots' as any} gap={20} />
@@ -369,7 +436,7 @@ const App: React.FC = () => {
                   <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
                     <p className="text-xs text-blue-700 leading-relaxed">
                       <AlertCircle className="w-3 h-3 inline mr-1 mb-0.5" />
-                      <strong>{selectedEdge.label}</strong> 관계는 소스 테이블과 타겟 테이블 간의 데이터 연결 방식을 정의합니다.
+                      선택된 선을 클릭한 상태에서 <strong>Delete</strong> 또는 <strong>Backspace</strong> 키를 누르면 관계를 끊을 수 있습니다. 끊어지는 타겟 컬럼의 FK 속성은 자동으로 비활성화됩니다.
                     </p>
                   </div>
                 </div>
