@@ -1,81 +1,47 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
-import { AISuggestion } from "../types";
+import { GoogleGenAI } from "@google/genai";
+import { TableData, ColumnType } from "../types";
 
-// Fix: Strictly following the initialization rule for GoogleGenAI - must use named parameter
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+/**
+ * Uses Google Gemini API to generate professional PostgreSQL DDL SQL based on the schema and relations.
+ */
+export const generateSQL = async (tables: TableData[], relations: any[]): Promise<string> => {
+  // Fix: Initializing GoogleGenAI with named parameter apiKey as per guidelines
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const generateSchemaSuggestion = async (prompt: string): Promise<AISuggestion> => {
-  // Fix: Use 'gemini-3-pro-preview' for complex reasoning tasks like database design
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: `Design a database schema for the following requirement: "${prompt}". Return as a structured JSON. Ensure you identify potential Unique constraints.`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          tables: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                name: { type: Type.STRING },
-                columns: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      name: { type: Type.STRING },
-                      type: { type: Type.STRING },
-                      isPK: { type: Type.BOOLEAN },
-                      isFK: { type: Type.BOOLEAN },
-                      isUnique: { type: Type.BOOLEAN },
-                      isNullable: { type: Type.BOOLEAN }
-                    },
-                    required: ["id", "name", "type", "isPK", "isFK", "isUnique", "isNullable"]
-                  }
-                }
-              },
-              required: ["id", "name", "columns"]
-            }
-          },
-          relations: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                sourceTableId: { type: Type.STRING },
-                targetTableId: { type: Type.STRING },
-                sourceColumnId: { type: Type.STRING },
-                targetColumnId: { type: Type.STRING },
-                type: { type: Type.STRING, description: "One of '1:1', '1:N', 'N:M'" }
-              },
-              required: ["sourceTableId", "targetTableId", "sourceColumnId", "targetColumnId", "type"]
-            }
-          }
-        },
-        required: ["tables", "relations"]
-      }
-    }
-  });
+  // Prepare schema context for the AI
+  const schemaContext = tables.map(table => ({
+    tableName: table.name,
+    columns: table.columns.map(col => ({
+      name: col.name,
+      type: col.type,
+      isPrimaryKey: col.isPK,
+      isForeignKey: col.isFK,
+      isUnique: col.isUnique,
+      isNullable: col.isNullable
+    })),
+    relations: relations.filter(r => r.source === table.id || r.target === table.id)
+  }));
 
   try {
-    return JSON.parse(response.text || '{}') as AISuggestion;
-  } catch (e) {
-    console.error("Failed to parse AI response", e);
-    return { tables: [], relations: [] };
+    // Complex Text Task: SQL Generation using 'gemini-3-pro-preview'
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: `Generate a high-quality PostgreSQL DDL SQL script based on the following JSON schema representation:
+      
+      ${JSON.stringify(schemaContext, null, 2)}
+      
+      Guidelines:
+      - Use double quotes for all identifiers (table and column names).
+      - Include all constraints (PK, FK, Unique, Not Null).
+      - Output ONLY the SQL script. Do not include markdown formatting or explanations.`,
+    });
+
+    // Extracting text output directly from response.text
+    const result = response.text || "-- Error: Empty response from AI";
+    return result.trim();
+  } catch (error) {
+    console.error("Gemini SQL Generation failed:", error);
+    return `-- SQL Generation Error: ${error instanceof Error ? error.message : String(error)}`;
   }
-};
-
-export const generateSQL = async (tables: any[], relations: any[]): Promise<string> => {
-  const schemaStr = JSON.stringify({ tables, relations });
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: `Generate standard PostgreSQL SQL DDL for the following schema definition: ${schemaStr}. Provide only the SQL code, no explanations. Make sure to include PRIMARY KEY, FOREIGN KEY, and UNIQUE constraints where specified.`,
-  });
-
-  return response.text || "-- No SQL generated";
 };

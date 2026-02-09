@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import ReactFlow, { 
   addEdge, 
   Background, 
@@ -15,11 +15,11 @@ import ReactFlow, {
   ConnectionMode,
   MarkerType
 } from 'reactflow';
-import { Plus, Database, Wand2, FileCode, Trash2, X, Save, AlertCircle, Key, Link, Share2, ShieldCheck } from 'lucide-react';
+import { Plus, Database, FileCode, Trash2, X, AlertCircle, Key, Link, Share2, ShieldCheck } from 'lucide-react';
 
 import TableNode from './components/TableNode';
 import { TableData, Column, ColumnType, RelationType } from './types';
-import { generateSchemaSuggestion, generateSQL } from './services/geminiService';
+import { generateSQL } from './services/geminiService';
 
 const nodeTypes = {
   table: TableNode,
@@ -30,7 +30,7 @@ const initialNodes: Node<TableData>[] = [
     id: 't1',
     type: 'table',
     position: { x: 100, y: 100 },
-    style: { width: 200 }, // 기본 너비 설정
+    style: { width: 200 },
     data: {
       id: 't1',
       name: 'users',
@@ -45,7 +45,7 @@ const initialNodes: Node<TableData>[] = [
     id: 't2',
     type: 'table',
     position: { x: 450, y: 150 },
-    style: { width: 200 }, // 기본 너비 설정
+    style: { width: 200 },
     data: {
       id: 't2',
       name: 'posts',
@@ -77,11 +77,9 @@ const App: React.FC = () => {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [sqlOutput, setSqlOutput] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  // 현재 선택된 노드/엣지 데이터를 상태에서 직접 찾습니다 (객체 참조 유지 방지)
   const selectedNode = useMemo(() => nodes.find(n => n.id === selectedNodeId) || null, [nodes, selectedNodeId]);
   const selectedEdge = useMemo(() => edges.find(e => e.id === selectedEdgeId) || null, [edges, selectedEdgeId]);
 
@@ -228,53 +226,26 @@ const App: React.FC = () => {
     setIsSidebarOpen(false);
   };
 
-  const handleAISuggest = async () => {
-    if (!aiPrompt) return;
-    setIsLoading(true);
-    try {
-      const suggestion = await generateSchemaSuggestion(aiPrompt);
-      const newNodes: Node<TableData>[] = suggestion.tables.map((t, idx) => ({
-        id: t.id,
-        type: 'table',
-        position: { x: 100 + (idx * 300) % 900, y: 100 + Math.floor(idx / 3) * 250 },
-        style: { width: 200 },
-        data: t
-      }));
-      const newEdges: Edge[] = suggestion.relations.map((r, idx) => ({
-        id: `e-ai-${idx}`,
-        source: r.sourceTableId,
-        target: r.targetTableId,
-        sourceHandle: r.sourceColumnId,
-        targetHandle: r.targetColumnId,
-        label: r.type,
-        markerEnd: r.type === '1:1' ? undefined : { type: MarkerType.ArrowClosed, color: '#3b82f6' },
-        markerStart: r.type === 'N:M' ? { type: MarkerType.ArrowClosed, color: '#3b82f6' } : undefined,
-        style: { stroke: '#3b82f6', strokeWidth: 2 }
-      }));
-      setNodes(newNodes);
-      setEdges(newEdges);
-      setAiPrompt('');
-    } catch (error) {
-      console.error(error);
-      alert("AI suggestion failed.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
+  // Fix: handleGenerateSQL is now async to handle AI generation
   const handleGenerateSQL = async () => {
-    setIsLoading(true);
     try {
-      const sql = await generateSQL(nodes.map(n => n.data), edges.map(e => ({
-        source: e.source,
-        target: e.target,
-        label: e.label
-      })));
+      setIsGenerating(true);
+      const sql = await generateSQL(
+        nodes.map(n => n.data), 
+        edges.map(e => ({
+          source: e.source,
+          target: e.target,
+          label: e.label,
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle
+        }))
+      );
       setSqlOutput(sql);
     } catch (e) {
+      console.error(e);
       alert("SQL generation failed.");
     } finally {
-      setIsLoading(false);
+      setIsGenerating(false);
     }
   };
 
@@ -285,31 +256,18 @@ const App: React.FC = () => {
       <header className="h-14 bg-slate-900 flex items-center justify-between px-6 shadow-md z-10">
         <div className="flex items-center gap-3">
           <Database className="text-blue-400 w-6 h-6" />
-          <h1 className="text-white font-bold text-lg tracking-tight">SchemaViz AI</h1>
+          <h1 className="text-white font-bold text-lg tracking-tight">SchemaViz</h1>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex bg-slate-800 rounded-md p-1 items-center">
-            <input 
-              type="text" 
-              placeholder="E.g., E-commerce schema..." 
-              className="bg-transparent border-none outline-none text-slate-200 px-3 py-1 text-sm w-48 lg:w-64"
-              value={aiPrompt}
-              onChange={(e) => setAiPrompt(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAISuggest()}
-            />
-            <button 
-              onClick={handleAISuggest}
-              disabled={isLoading || !aiPrompt}
-              className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded px-3 py-1 text-xs font-semibold flex items-center gap-1 transition-colors"
-            >
-              {isLoading ? '...' : <><Wand2 className="w-3 h-3" /> AI Design</>}
-            </button>
-          </div>
+        <div className="flex items-center gap-3">
           <button onClick={addTable} className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Add Table
           </button>
-          <button onClick={handleGenerateSQL} className="flex items-center gap-2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-sm font-medium transition-colors">
-            <FileCode className="w-4 h-4" /> Export SQL
+          <button 
+            onClick={handleGenerateSQL} 
+            disabled={isGenerating}
+            className="flex items-center gap-2 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <FileCode className="w-4 h-4" /> {isGenerating ? 'Generating...' : 'Export SQL'}
           </button>
         </div>
       </header>
@@ -439,16 +397,6 @@ const App: React.FC = () => {
               <button onClick={() => setSqlOutput(null)} className="px-6 py-2 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-lg font-semibold text-sm">Close</button>
             </div>
           </div>
-        </div>
-      )}
-
-      {isLoading && (
-        <div className="fixed inset-0 bg-white/50 backdrop-blur-[1px] z-50 flex flex-col items-center justify-center">
-          <div className="relative">
-             <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
-             <Wand2 className="w-6 h-6 text-blue-600 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
-          </div>
-          <p className="mt-4 font-bold text-slate-700 animate-pulse">Gemini is thinking...</p>
         </div>
       )}
     </div>

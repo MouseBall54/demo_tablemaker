@@ -56,7 +56,12 @@ const TableNode = ({ data, selected }: TableNodeProps) => {
               <div className="flex gap-0.5 shrink-0">
                 {col.isPK && <Key className="w-2.5 h-2.5 text-amber-500 fill-amber-500" />}
                 {col.isFK && <Link className="w-2.5 h-2.5 text-blue-500" />}
-                {col.isUnique && <ShieldCheck className="w-2.5 h-2.5 text-purple-500" title="Unique Constraint" />}
+                {/* Fix: Wrapped ShieldCheck in a span because Lucide icons do not support the title prop directly */}
+                {col.isUnique && (
+                  <span title="Unique Constraint">
+                    <ShieldCheck className="w-2.5 h-2.5 text-purple-500" />
+                  </span>
+                )}
               </div>
               <span className={`text-[10px] truncate ${col.isPK ? 'font-bold text-slate-900' : 'text-slate-600'}`}>
                 {col.name}

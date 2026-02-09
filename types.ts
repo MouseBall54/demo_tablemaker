@@ -18,16 +18,3 @@ export interface TableData {
 }
 
 export type RelationType = '1:1' | '1:N' | 'N:M';
-
-export interface RelationData {
-  sourceTableId: string;
-  targetTableId: string;
-  sourceColumnId: string;
-  targetColumnId: string;
-  type: RelationType;
-}
-
-export interface AISuggestion {
-  tables: TableData[];
-  relations: RelationData[];
-}
