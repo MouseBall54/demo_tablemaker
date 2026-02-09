@@ -1,0 +1,5 @@
+{
+  "name": "SchemaViz AI",
+  "description": "A professional-grade database relationship diagram (ERD) tool with GUI-based table manipulation, relationship management (1:1, 1:N, N:M), and AI-powered schema suggestions using Gemini.",
+  "requestFramePermissions": []
+}
