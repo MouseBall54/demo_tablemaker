@@ -22,10 +22,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # 캐시 기능을 제거하여 package-lock.json 부재로 인한 에러를 방지합니다.
 
       - name: Install dependencies
-        run: npm install --no-package-lock
+        run: npm install
 
       - name: Build
         run: npm run build
